@@ -1,0 +1,30 @@
+[package]
+name = "fio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4"
+itoa = "1"
+bytes = "1"
+httparse = "1"
+
+tokio = { version = "1.45.1", features = ["full"] }
+num_cpus = "1.0"
+tokio-uring = { version = "0.5.0", optional = true }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+panic = 'abort'
+lto = 'thin'
+debug = false
+incremental = false
+overflow-checks = false
+
+[features]
+default = []
+work_stealing = []
+share_nothing = []
+io_uring_registry = ["tokio-uring"]
+io_uring_pool = ["tokio-uring"]
