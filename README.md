@@ -1,4 +1,3 @@
-````markdown
 # FIo
 
 FIo is an experimental HTTP server library. It supports multiple concurrency and I/O strategies, including multithreading with work stealing, isolated per thread runtimes (share nothing), and advanced I/O using io_uring with both reistry and pooled buffer management
@@ -11,7 +10,6 @@ FIo is an experimental HTTP server library. It supports multiple concurrency and
 - 🧵🔧 io_uring support with buffer pool and fixed buffer registry
 - 🔒 Optional mode selection: only one runtime mode can be enabled at compile time
 
----
 
 ## Installation
 
@@ -21,7 +19,7 @@ Add this to your `Cargo.toml`:
 [dependencies]
 fio = { git = "https://github.com/fuji-184/FIo.git", features = ["choose the mode you want"] }
 ```
-````
+
 
 > Only **one** of the following features may be enabled at a time:
 >
@@ -32,13 +30,11 @@ fio = { git = "https://github.com/fuji-184/FIo.git", features = ["choose the mod
 
 Enabling more than one will cause a compile time error
 
----
 
 ## Usage
 
 You must implement the `HttpService` trait for your service. Depending on the active feature, different methods will be called
 
----
 
 ### 1. Work Stealing
 
@@ -74,7 +70,6 @@ fn main() {
 }
 ```
 
----
 
 ### 2. Share Nothing
 
@@ -110,7 +105,6 @@ fn main() {
 }
 ```
 
----
 
 ### 3. io_uring with Registry
 
@@ -150,7 +144,6 @@ fn main() {
 }
 ```
 
----
 
 ### 4. io_uring with Buffer Pool
 
@@ -189,22 +182,4 @@ impl HttpService for Server {
 fn main() {
     HttpServer(Server).start("0.0.0.0:8080");
 }
-```
-
----
-
-## Trait Overview
-
-```rust
-trait HttpService {
-    // Called in non uring modes
-    fn router(&mut self, req: fio::Request, rsp: &mut fio::Response) -> std::io::Result<()>;
-
-    // Called in io_uring modes
-    fn io_uring_router(&self, path: &str) -> fio::io_uring::Res;
-}
-```
-
-```
-
 ```
