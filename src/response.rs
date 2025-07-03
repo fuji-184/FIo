@@ -1,10 +1,11 @@
 use std::io;
+use std::mem::MaybeUninit;
 
 use crate::request::MAX_HEADERS;
 
 use bytes::BytesMut;
 pub struct Response<'a> {
-    headers: [&'static str; MAX_HEADERS],
+    headers: [Header; MAX_HEADERS],
     headers_len: usize,
     status_message: StatusMessage,
     body: Body,
@@ -17,6 +18,12 @@ enum Body {
     Dummy,
 }
 
+enum Header {
+    Str(&'static str),
+    Vec(Vec<u8>),
+    String(String),
+}
+
 struct StatusMessage {
     code: usize,
     msg: &'static str,
@@ -24,10 +31,17 @@ struct StatusMessage {
 
 impl<'a> Response<'a> {
     pub(crate) fn new(rsp_buf: &'a mut BytesMut) -> Response<'a> {
-        let headers: [&'static str; 16] = [""; 16];
+        let mut headers: [MaybeUninit<Header>; MAX_HEADERS] =
+            unsafe { MaybeUninit::uninit().assume_init() };
+
+        for slot in &mut headers[..] {
+            slot.write(Header::Str(""));
+        }
+
+        let headers = unsafe { std::mem::transmute::<_, [Header; MAX_HEADERS]>(headers) };
 
         Response {
-            headers,
+            headers: headers,
             headers_len: 0,
             body: Body::Dummy,
             status_message: StatusMessage {
@@ -46,7 +60,14 @@ impl<'a> Response<'a> {
 
     #[inline]
     pub fn header(&mut self, header: &'static str) -> &mut Self {
-        self.headers[self.headers_len] = header;
+        self.headers[self.headers_len] = Header::Str(header);
+        self.headers_len += 1;
+        self
+    }
+
+    #[inline]
+    pub fn header_string(&mut self, header: String) -> &mut Self {
+        self.headers[self.headers_len] = Header::String(header);
         self.headers_len += 1;
         self
     }
@@ -121,7 +142,11 @@ pub(crate) fn encode(mut rsp: Response, buf: &mut BytesMut) {
     let headers = unsafe { rsp.headers.get_unchecked(..rsp.headers_len) };
     for h in headers {
         buf.extend_from_slice(b"\r\n");
-        buf.extend_from_slice(h.as_bytes());
+        match h {
+            Header::Str(s) => buf.extend_from_slice(s.as_bytes()),
+            Header::Vec(v) => buf.extend_from_slice(&v),
+            Header::String(s) => buf.extend_from_slice(s.as_bytes()),
+        }
     }
 
     buf.extend_from_slice(b"\r\n\r\n");

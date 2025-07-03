@@ -1,10 +1,12 @@
 use crate::http_server::reserve_buf;
 use bytes::{Buf, BufMut, BytesMut};
+use std::collections::HashMap;
 use std::fmt;
 use std::mem::{self, MaybeUninit};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{io, slice};
+use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncBufRead, AsyncRead, ReadBuf};
 use tokio::net::TcpStream;
 
@@ -130,6 +132,7 @@ pub struct Request<'buf, 'header, 'stream> {
     req: httparse::Request<'header, 'buf>,
     req_buf: &'buf mut BytesMut,
     stream: &'stream mut TcpStream,
+    post_params: Option<HashMap<String, String>>,
 }
 
 impl<'buf, 'header, 'stream> Request<'buf, 'header, 'stream> {
@@ -161,6 +164,44 @@ impl<'buf, 'header, 'stream> Request<'buf, 'header, 'stream> {
             stream: self.stream,
             req_buf: self.req_buf,
         }
+    }
+
+    #[inline]
+    pub fn url_params(&self) -> HashMap<String, String> {
+        let mut params = HashMap::new();
+
+        unsafe {
+            let full_path = self.req.path.unwrap_unchecked();
+            let query = match full_path.find('?') {
+                Some(pos) => &full_path[pos + 1..],
+                None => "",
+            };
+
+            params = url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect::<HashMap<String, String>>();
+        }
+
+        params
+    }
+
+    #[inline]
+    pub async fn post_params(&mut self) -> Option<&HashMap<String, String>> {
+        if self.post_params.is_none() {
+            let mut body = String::new();
+            let mut body_reader = BodyReader {
+                body_limit: self.content_length(),
+                total_read: 0,
+                stream: self.stream,
+                req_buf: self.req_buf,
+            };
+            body_reader.read_to_string(&mut body).await.ok()?;
+
+            let parsed = parse_form_urlencoded(&body);
+            self.post_params = Some(parsed);
+        }
+
+        self.post_params.as_ref()
     }
 
     fn content_length(&self) -> usize {
@@ -206,6 +247,45 @@ fn parse_content_length_fast(bytes: &[u8]) -> usize {
     result
 }
 
+#[inline]
+fn parse_form_urlencoded(body: &str) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+
+    for pair in body.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+            let key = percent_decode(k);
+            let val = percent_decode(v);
+            params.insert(key, val);
+        }
+    }
+
+    params
+}
+
+#[inline]
+fn percent_decode(s: &str) -> String {
+    let mut result = Vec::with_capacity(s.len());
+    let mut chars = s.as_bytes().iter().cloned();
+
+    while let Some(c) = chars.next() {
+        match c {
+            b'%' => {
+                let hi = chars.next().unwrap_or(b'0');
+                let lo = chars.next().unwrap_or(b'0');
+                let hex = [hi, lo];
+                let byte = u8::from_str_radix(std::str::from_utf8(&hex).unwrap_or("00"), 16)
+                    .unwrap_or(b'?');
+                result.push(byte);
+            }
+            b'+' => result.push(b' '),
+            b => result.push(b),
+        }
+    }
+
+    String::from_utf8(result).unwrap_or_default()
+}
+
 impl fmt::Debug for Request<'_, '_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "<HTTP Request {} {}>", self.method(), self.path())
@@ -237,5 +317,6 @@ pub fn decode<'header, 'buf, 'stream>(
         req,
         req_buf,
         stream,
+        post_params: None,
     }))
 }

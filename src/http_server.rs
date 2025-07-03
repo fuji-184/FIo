@@ -35,8 +35,15 @@ const POOL_SIZE: usize = 1024;
 use crate::io_uring::*;
 
 pub trait HttpService {
-    #[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
-    fn router(&mut self, req: Request, rsp: &mut Response) -> io::Result<()>;
+    #[cfg(feature = "work_stealing")]
+    fn router(
+        &mut self,
+        req: Request,
+        rsp: &mut Response,
+    ) -> impl std::future::Future<Output = io::Result<()>> + Send;
+
+    #[cfg(feature = "share_nothing")]
+    async fn router(&mut self, req: Request, rsp: &mut Response) -> io::Result<()>;
 
     #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
     fn io_uring_router(&self, path: &str) -> Res;
@@ -756,8 +763,18 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
     }
 }
 
+#[cfg(feature = "work_stealing")]
+pub trait MaybeSend: Send {}
+#[cfg(feature = "work_stealing")]
+impl<T: Send> MaybeSend for T {}
+
+#[cfg(feature = "share_nothing")]
+pub trait MaybeSend {}
+#[cfg(feature = "share_nothing")]
+impl<T> MaybeSend for T {}
+
 #[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
-async fn each_connection_loop<T: HttpService>(
+async fn each_connection_loop<T: HttpService + MaybeSend>(
     mut stream: TcpStream,
     mut service: T,
 ) -> io::Result<()> {
@@ -781,7 +798,7 @@ async fn each_connection_loop<T: HttpService>(
             reserve_buf(&mut rsp_buf);
             let mut rsp = Response::new(&mut body_buf);
 
-            match service.router(req, &mut rsp) {
+            match service.router(req, &mut rsp).await {
                 Ok(()) => response::encode(rsp, &mut rsp_buf),
                 Err(e) => response::encode_error(e, &mut rsp_buf),
             }
