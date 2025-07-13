@@ -824,7 +824,8 @@ pub fn get_somaxconn() -> io::Result<u32> {
     let output = Command::new("sysctl").arg("net.core.somaxconn").output()?;
 
     if !output.status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "sysctl failed"));
+        //return Err(io::Error::new(io::ErrorKind::Other, "sysctl failed"));
+    return Ok(4096);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -834,10 +835,12 @@ pub fn get_somaxconn() -> io::Result<u32> {
         }
     }
 
-    Err(io::Error::new(
+   /* Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "could not parse somaxconn",
-    ))
+    )) */
+
+    Ok(4096)
 }
 
 const BUF_LEN: usize = 4096 * 8;
