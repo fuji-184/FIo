@@ -29,5 +29,9 @@ mod request;
 mod response;
 
 pub use http_server::{HttpServer, HttpService, HttpServiceFactory};
+#[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
 pub use request::{BodyReader, Request};
 pub use response::Response;
+
+#[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
+pub use httparse::Request;

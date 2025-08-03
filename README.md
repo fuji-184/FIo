@@ -10,7 +10,6 @@ FIo is an experimental HTTP server library. It supports multiple concurrency and
 - 🧵🔧 io_uring support with buffer pool and fixed buffer registry
 - 🔒 Optional mode selection: only one runtime mode can be enabled at compile time
 
-
 ## Installation
 
 Add this to your `Cargo.toml`:
@@ -19,7 +18,6 @@ Add this to your `Cargo.toml`:
 [dependencies]
 fio = { git = "https://github.com/fuji-184/FIo.git", features = ["choose the mode you want"] }
 ```
-
 
 > Only **one** of the following features may be enabled at a time:
 >
@@ -30,11 +28,9 @@ fio = { git = "https://github.com/fuji-184/FIo.git", features = ["choose the mod
 
 Enabling more than one will cause a compile time error
 
-
 ## Usage
 
 You must implement the `HttpService` trait for your service. Depending on the active feature, different methods will be called
-
 
 ### 1. Work Stealing
 
@@ -55,7 +51,7 @@ use std::io;
 struct Server;
 
 impl HttpService for Server {
-    fn router(&mut self, req: Request, res: &mut Response) -> io::Result<()> {
+    async fn router(&mut self, req: Request<'_, '_, '_>, res: &mut Response<'_>) -> io::Result<()> {
         match req.path() {
             "/" => res.body("hello") // or separated handler function
             _   => res.body("not found")
@@ -69,7 +65,6 @@ fn main() {
     HttpServer(Server).start("0.0.0.0:8080");
 }
 ```
-
 
 ### 2. Share Nothing
 
@@ -90,7 +85,7 @@ use std::io;
 struct Server;
 
 impl HttpService for Server {
-    fn router(&mut self, req: Request, res: &mut Response) -> io::Result<()> {
+    async fn router(&mut self, req: Request<'_, '_, '_>, res: &mut Response<'_>) -> io::Result<()> {
         match req.path() {
             "/" => res.body("hello")
             _   => res.body("not found")
@@ -105,7 +100,6 @@ fn main() {
 }
 ```
 
-
 ### 3. io_uring with Registry
 
 Enable the feature:
@@ -118,14 +112,14 @@ fio = { git = "https://github.com/fuji-184/FIo.git", features = ["io_uring_regis
 Then:
 
 ```rust
-use fio::{HttpServer, HttpService, io_uring::Res};
+use fio::{HttpServer, HttpService, Request, io_uring::Res};
 
 #[derive(Clone)]
 struct Server;
 
 impl HttpService for Server {
-    fn io_uring_router(&self, path: &str) -> Res {
-        match req.path() {
+    fn router(&self, req: Request) -> Res {
+        match req.path.unwrap() {
             "/" => {
                 Res {
                     status_code: 200,
@@ -144,7 +138,6 @@ fn main() {
 }
 ```
 
-
 ### 4. io_uring with Buffer Pool
 
 Enable the feature:
@@ -157,15 +150,15 @@ fio = { git = "https://github.com/fuji-184/FIo.git", features = ["io_uring_pool"
 Then:
 
 ```rust
-use fio::{HttpServer, HttpService, io_uring::Res};
+use fio::{HttpServer, HttpService, Request, io_uring::Res};
 use std::io;
 
 #[derive(Clone)]
 struct Server;
 
 impl HttpService for Server {
-    fn io_uring_router(&self, path: &str) -> Res {
-        match req.path() {
+    fn io_uring_router(&self, req: Request) -> Res {
+        match req.path.unwrap() {
             "/" => {
                 Res {
                     status_code: 200,

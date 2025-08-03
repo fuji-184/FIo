@@ -10,11 +10,13 @@ use tokio::net::{TcpSocket, TcpStream};
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
 use tokio_uring::buf::fixed::FixedBufRegistry;
 
+#[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
 use crate::request::{self, Request};
+#[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
 use crate::response::{self, Response};
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
-use httparse::{EMPTY_HEADER, Request as HttparseRequest, Status};
+use httparse::{EMPTY_HEADER, Request, Status};
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
 use std::fmt::Write;
@@ -32,7 +34,7 @@ const BUF_SIZE: usize = 1024 * 8;
 const POOL_SIZE: usize = 1024;
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
-use crate::io_uring::*;
+use crate::io_uring::{Res, *};
 
 pub trait HttpService {
     #[cfg(feature = "work_stealing")]
@@ -46,7 +48,7 @@ pub trait HttpService {
     async fn router(&mut self, req: Request, rsp: &mut Response) -> io::Result<()>;
 
     #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
-    fn io_uring_router(&self, path: &str) -> Res;
+    fn router(&self, req: Request) -> Res;
 }
 
 pub trait HttpServiceFactory: Send + Sized + 'static {
@@ -207,10 +209,9 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                     write_pos = n;
 
                                     let mut headers = [EMPTY_HEADER; 32];
-                                    let mut req = HttparseRequest::new(&mut headers);
+                                    let mut req = Request::new(&mut headers);
                                     match req.parse(&slice[..write_pos]) {
                                         Ok(Status::Complete(_used)) => {
-                                            let path = req.path.unwrap_or("");
                                             let mut should_close = false;
                                             for header in req.headers.iter() {
                                                 if header.name.eq_ignore_ascii_case("connection") {
@@ -225,7 +226,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 }
                                             }
 
-                                            let response = service.io_uring_router(path);
+                                            let response = service.router(req);
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -336,10 +337,9 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                     write_pos = n;
 
                                     let mut headers = [EMPTY_HEADER; 32];
-                                    let mut req = HttparseRequest::new(&mut headers);
+                                    let mut req = Request::new(&mut headers);
                                     match req.parse(&slice[..write_pos]) {
                                         Ok(Status::Complete(_used)) => {
-                                            let path = req.path.unwrap_or("");
                                             let mut should_close = false;
                                             for header in req.headers.iter() {
                                                 if header.name.eq_ignore_ascii_case("connection") {
@@ -354,7 +354,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 }
                                             }
 
-                                            let response = service.io_uring_router(path);
+                                            let response = service.router(req);
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -564,10 +564,9 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                     write_pos = n;
 
                                     let mut headers = [EMPTY_HEADER; 32];
-                                    let mut req = HttparseRequest::new(&mut headers);
+                                    let mut req = Request::new(&mut headers);
                                     match req.parse(&slice[..write_pos]) {
                                         Ok(Status::Complete(_used)) => {
-                                            let path = req.path.unwrap_or("");
                                             let mut should_close = false;
                                             for header in req.headers.iter() {
                                                 if header.name.eq_ignore_ascii_case("connection") {
@@ -582,7 +581,7 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 }
                                             }
 
-                                            let response = service.io_uring_router(path);
+                                            let response = service.router(req);
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -695,10 +694,9 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                     write_pos = n;
 
                                     let mut headers = [EMPTY_HEADER; 32];
-                                    let mut req = HttparseRequest::new(&mut headers);
+                                    let mut req = Request::new(&mut headers);
                                     match req.parse(&slice[..write_pos]) {
                                         Ok(Status::Complete(_used)) => {
-                                            let path = req.path.unwrap_or("");
                                             let mut should_close = false;
                                             for header in req.headers.iter() {
                                                 if header.name.eq_ignore_ascii_case("connection") {
@@ -713,7 +711,7 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 }
                                             }
 
-                                            let response = service.io_uring_router(path);
+                                            let response = service.router(req);
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -825,7 +823,7 @@ pub fn get_somaxconn() -> io::Result<u32> {
 
     if !output.status.success() {
         //return Err(io::Error::new(io::ErrorKind::Other, "sysctl failed"));
-    return Ok(4096);
+        return Ok(4096);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -835,7 +833,7 @@ pub fn get_somaxconn() -> io::Result<u32> {
         }
     }
 
-   /* Err(io::Error::new(
+    /* Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "could not parse somaxconn",
     )) */
