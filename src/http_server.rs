@@ -242,6 +242,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                             if res.is_err() || should_close {
                                                 return;
                                             }
+                                            rsp_buf.clear();
                                         }
                                         _ => return,
                                     }
@@ -346,6 +347,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                             if res.is_err() || should_close {
                                                 return;
                                             }
+                                            rsp_buf.clear();
                                         }
                                         _ => return,
                                     }
@@ -553,6 +555,7 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                             if res.is_err() || should_close {
                                                 return;
                                             }
+                                            rsp_buf.clear();
                                         }
                                         _ => return,
                                     }
@@ -660,7 +663,7 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                             if res.is_err() || should_close {
                                                 return;
                                             }
-                                            //rsp_buf.clear();
+                                            rsp_buf.clear();
                                         }
                                         _ => return,
                                     }
