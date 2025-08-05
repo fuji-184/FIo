@@ -118,7 +118,7 @@ use fio::{HttpServer, HttpService, Request, io_uring::Res};
 struct Server;
 
 impl HttpService for Server {
-    fn router(&self, req: Request) -> Res {
+    async fn router(&self, req: Request<'_,'_>) -> Res {
         match req.path.unwrap() {
             "/" => {
                 Res {
@@ -157,7 +157,7 @@ use std::io;
 struct Server;
 
 impl HttpService for Server {
-    fn io_uring_router(&self, req: Request) -> Res {
+    async fn router(&self, req: Request<'_,'_>) -> Res {
         match req.path.unwrap() {
             "/" => {
                 Res {

@@ -11,9 +11,10 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio_uring::buf::fixed::FixedBufRegistry;
 
 #[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
-use crate::request::{self, Request};
-#[cfg(any(feature = "work_stealing", feature = "share_nothing"))]
-use crate::response::{self, Response};
+use crate::{
+    request::{self, Request},
+    response::{self, Response},
+};
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
 use httparse::{EMPTY_HEADER, Request, Status};
@@ -48,7 +49,7 @@ pub trait HttpService {
     async fn router(&mut self, req: Request, rsp: &mut Response) -> io::Result<()>;
 
     #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
-    fn router(&self, req: Request) -> Res;
+    async fn router(&self, req: Request) -> Res;
 }
 
 pub trait HttpServiceFactory: Send + Sized + 'static {
@@ -78,7 +79,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
             .build()
             .unwrap();
 
-        rt.block_on(async move {
+        rt.block_on(tokio::spawn(async move {
             let service = self.new_service();
             let value = service.clone();
             let socket = TcpSocket::new_v4().unwrap();
@@ -86,16 +87,19 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
 
             let listener = socket.listen(get_somaxconn().unwrap()).unwrap();
 
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let service = value.clone();
-                tokio::spawn(async move {
-                    if let Err(_) = each_connection_loop(stream, service).await {
-                        //eprintln!("service err = {e:?}");
-                    }
-                });
-            }
-        });
+            let handle = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let service = value.clone();
+                    tokio::spawn(async move {
+                        if let Err(_) = each_connection_loop(stream, service).await {
+                            //eprintln!("service err = {e:?}");
+                        }
+                    });
+                }
+            });
+            handle.await;
+        }));
     }
 
     #[cfg(feature = "share_nothing")]
@@ -226,7 +230,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 }
                                             }
 
-                                            let response = service.router(req);
+                                            let response = service.router(req).await;
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -354,7 +358,7 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 }
                                             }
 
-                                            let response = service.router(req);
+                                            let response = service.router(req).await;
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -432,22 +436,26 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
             .build()
             .unwrap();
 
-        rt.block_on(async move {
+        let _ = rt.block_on(async move {
             let value = service.clone();
 
             let socket = TcpSocket::new_v4().unwrap();
             socket.bind(addr.parse().unwrap()).unwrap();
             let listener = socket.listen(get_somaxconn().unwrap()).unwrap();
 
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let service = value.clone();
-                tokio::spawn(async move {
-                    if let Err(_) = each_connection_loop(stream, service).await {
-                        //eprintln!("service err = {e:?}");
-                    }
-                });
-            }
+            let handle = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let service = value.clone();
+                    tokio::spawn(async move {
+                        if let Err(_) = each_connection_loop(stream, service).await {
+                            //eprintln!("service err = {e:?}");
+                        }
+                    });
+                }
+            });
+
+            let _ = handle.await;
         });
     }
 
@@ -581,7 +589,7 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 }
                                             }
 
-                                            let response = service.router(req);
+                                            let response = service.router(req).await;
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
@@ -711,7 +719,7 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 }
                                             }
 
-                                            let response = service.router(req);
+                                            let response = service.router(req).await;
                                             let connection_header = if should_close {
                                                 "Connection: close".to_string()
                                             } else {
