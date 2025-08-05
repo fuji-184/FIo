@@ -583,6 +583,7 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "748482e3e13584a34664a710168ad5068e8cb1d968aa4ffa887e83ca6dd27967"
 dependencies = [
+ "bytes",
  "futures-util",
  "io-uring 0.6.4",
  "libc",

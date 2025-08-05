@@ -20,6 +20,9 @@ use crate::{
 use httparse::{EMPTY_HEADER, Request, Status};
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
+use tokio_uring::buf::BoundedBuf;
+
+#[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
 use std::fmt::Write;
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
@@ -230,12 +233,12 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let write_buf = rsp_buf.to_vec();
+                                            //let write_buf = rsp_buf.to_vec();
                                             //let cek = String::from_utf8(write_buf.clone()).unwrap();
                                             //println!("res: {}", cek);
                                             //rsp_buf.clear();
                                             //println!("len: {}", rsp_buf.len());
-                                            let (res, _) = stream.write_all(write_buf).await;
+                                            let (res, _) = stream.write_all(rsp_buf.clone()).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
@@ -289,7 +292,6 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                             let mut service = service.clone();
 
                             tokio_uring::spawn(async move {
-                                // Create buffers for this specific connection
                                 let mut rsp_buf = BytesMut::with_capacity(BUF_LEN);
                                 let mut body_buf = BytesMut::with_capacity(4096);
                                 let mut buf = match pool.try_next(BUF_SIZE) {
@@ -338,8 +340,9 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let write_buf = rsp_buf.to_vec();
-                                            let (res, buf_back) = stream.write_all(write_buf).await;
+                                            //let write_buf = rsp_buf.to_vec();
+                                            let (res, buf_back) =
+                                                stream.write_all(rsp_buf.clone()).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
@@ -539,13 +542,13 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let write_buf = rsp_buf.to_vec();
+                                            //let write_buf = rsp_buf.to_vec();
                                             //let cek = String::from_utf8(write_buf.clone()).unwrap();
                                             //println!("res: {}", cek);
                                             //rsp_buf.clear();
                                             //println!("len: {}", rsp_buf.len());
                                             //let write_buf = unsafe { bytes_mut_to_vec(rsp_buf) };
-                                            let (res, _) = stream.write_all(write_buf).await;
+                                            let (res, _) = stream.write_all(rsp_buf.clone()).await;
                                             //let (res, _) = stream.write_all(&rsp_buf[..]).await;
                                             if res.is_err() || should_close {
                                                 return;
@@ -648,12 +651,12 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let write_buf = rsp_buf.to_vec();
+                                            //let write_buf = rsp_buf.to_vec();
                                             //let cek = String::from_utf8(write_buf.clone()).unwrap();
                                             //println!("res: {}", cek);
                                             //rsp_buf.clear();
                                             //println!("len: {}", rsp_buf.len());
-                                            let (res, _) = stream.write_all(write_buf).await;
+                                            let (res, _) = stream.write_all(rsp_buf.clone()).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
