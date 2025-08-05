@@ -35,7 +35,8 @@ const BUF_SIZE: usize = 1024 * 8;
 const POOL_SIZE: usize = 1024;
 
 #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
-use crate::io_uring::{Res, *};
+use crate::response::{self, Response};
+//use crate::io_uring::{Res, *};
 
 pub trait HttpService {
     #[cfg(feature = "work_stealing")]
@@ -49,7 +50,7 @@ pub trait HttpService {
     async fn router(&mut self, req: Request, rsp: &mut Response) -> io::Result<()>;
 
     #[cfg(any(feature = "io_uring_registry", feature = "io_uring_pool"))]
-    async fn router(&self, req: Request) -> Res;
+    async fn router(&mut self, req: Request, rsp: &mut Response) -> io::Result<()>;
 }
 
 pub trait HttpServiceFactory: Send + Sized + 'static {
@@ -157,25 +158,22 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                         iter::repeat_with(|| Vec::with_capacity(BUF_SIZE)).take(POOL_SIZE),
                     );
 
-                    let response_pool = std::rc::Rc::new(std::cell::RefCell::new(
-                        (0..1000)
-                            .map(|_| String::with_capacity(POOL_SIZE))
-                            .collect::<Vec<_>>(),
-                    ));
                     let service = value.clone();
                     tokio_uring::start(async move {
                         registry.register().expect("register failed");
 
                         let socket = create_reuse_port_listener(&addr).unwrap();
                         let listener = socket.listen(get_somaxconn().unwrap()).unwrap();
-                        let listener = tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
+                        let listener =
+                            tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
 
                         loop {
                             let (stream, _) = listener.accept().await.unwrap();
                             let registry = registry.clone();
-                            let pool2 = response_pool.clone();
-                            let service = service.clone();
+                            let mut service = service.clone();
                             tokio_uring::spawn(async move {
+                                let mut rsp_buf = BytesMut::with_capacity(BUF_LEN);
+                                let mut body_buf = BytesMut::with_capacity(4096);
                                 let mut index = 0;
                                 let mut buf = None;
                                 while index < POOL_SIZE {
@@ -190,12 +188,6 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                     Some(b) => b,
                                     None => return,
                                 };
-
-                                let mut response_buf = pool2
-                                    .borrow_mut()
-                                    .pop()
-                                    .unwrap_or_else(|| String::with_capacity(1024));
-
                                 let mut read_pos = 0;
                                 let mut write_pos = 0;
 
@@ -230,34 +222,20 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 }
                                             }
 
-                                            let response = service.router(req).await;
-                                            let connection_header = if should_close {
-                                                "Connection: close".to_string()
-                                            } else {
-                                                "Connection: keep-alive".to_string()
-                                            };
+                                            reserve_buf(&mut rsp_buf);
+                                            let mut rsp = Response::new(&mut body_buf);
 
-                                            response_buf.clear();
-                                            let _ = write!(
-                                                response_buf,
-                                                "HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: {}\r\n",
-                                                response.status_code,
-                                                response.body.len(),
-                                                response.content_type,
-                                            );
-
-                                            for (k, v) in response.headers {
-                                                let _ = write!(response_buf, "{}: {}\r\n", k, v);
+                                            match service.router(req, &mut rsp).await {
+                                                Ok(()) => response::encode(rsp, &mut rsp_buf),
+                                                Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let _ = write!(
-                                                response_buf,
-                                                "{}\r\n\r\n{}",
-                                                connection_header, response.body
-                                            );
-                                            let (res, _) = stream
-                                                .write_all(response_buf.as_bytes().to_vec())
-                                                .await;
+                                            let write_buf = rsp_buf.to_vec();
+                                            //let cek = String::from_utf8(write_buf.clone()).unwrap();
+                                            //println!("res: {}", cek);
+                                            //rsp_buf.clear();
+                                            //println!("len: {}", rsp_buf.len());
+                                            let (res, _) = stream.write_all(write_buf).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
@@ -265,8 +243,6 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                         _ => return,
                                     }
                                 }
-
-                                pool2.borrow_mut().push(response_buf);
                             });
                         }
                     });
@@ -288,42 +264,38 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
         let handles: Vec<_> = (0..n)
             .map(|_| {
                 let addr = addr.to_string();
-                let value = value.clone();
+
+                let service = value.clone();
+
+                let value = service.clone();
                 std::thread::spawn(move || {
                     let pool = FixedBufPool::new(
                         iter::repeat_with(|| Vec::with_capacity(BUF_SIZE)).take(POOL_SIZE),
                     );
-                    let response_pool = std::rc::Rc::new(std::cell::RefCell::new(
-                        (0..1000)
-                            .map(|_| String::with_capacity(POOL_SIZE))
-                            .collect::<Vec<_>>(),
-                    ));
 
-                    let service = value.clone();
+                    let service = service.clone();
 
                     tokio_uring::start(async move {
                         pool.register().expect("register failed");
 
                         let socket = create_reuse_port_listener(&addr).unwrap();
                         let listener = socket.listen(get_somaxconn().unwrap()).unwrap();
-                        let listener = tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
+                        let listener =
+                            tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
 
                         loop {
                             let (stream, _) = listener.accept().await.unwrap();
                             let pool = pool.clone();
-                            let pool2 = response_pool.clone();
-                            let service = service.clone();
+                            let mut service = service.clone();
 
                             tokio_uring::spawn(async move {
+                                // Create buffers for this specific connection
+                                let mut rsp_buf = BytesMut::with_capacity(BUF_LEN);
+                                let mut body_buf = BytesMut::with_capacity(4096);
                                 let mut buf = match pool.try_next(BUF_SIZE) {
                                     Some(b) => b,
                                     None => return,
                                 };
-
-                                let mut response_buf = pool2
-                                    .borrow_mut()
-                                    .pop()
-                                    .unwrap_or_else(|| String::with_capacity(POOL_SIZE));
                                 let mut read_pos = 0;
                                 let mut write_pos = 0;
 
@@ -358,35 +330,16 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                                 }
                                             }
 
-                                            let response = service.router(req).await;
-                                            let connection_header = if should_close {
-                                                "Connection: close".to_string()
-                                            } else {
-                                                "Connection: keep-alive".to_string()
-                                            };
+                                            reserve_buf(&mut rsp_buf);
+                                            let mut rsp = Response::new(&mut body_buf);
 
-                                            response_buf.clear();
-                                            let _ = write!(
-                                                response_buf,
-                                                "HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: {}\r\n",
-                                                response.status_code,
-                                                response.body.len(),
-                                                response.content_type,
-                                            );
-
-
-                                            for (k, v) in response.headers {
-                                                let _ = write!(response_buf, "{}: {}\r\n", k, v);
+                                            match service.router(req, &mut rsp).await {
+                                                Ok(()) => response::encode(rsp, &mut rsp_buf),
+                                                Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let _ = write!(
-                                                response_buf,
-                                                "{}\r\n\r\n{}",
-                                                connection_header, response.body
-                                            );
-                                            let (res, _) = stream
-                                                .write_all(response_buf.as_bytes().to_vec())
-                                                .await;
+                                            let write_buf = rsp_buf.to_vec();
+                                            let (res, buf_back) = stream.write_all(write_buf).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
@@ -394,8 +347,6 @@ pub trait HttpServiceFactory: Send + Sized + 'static {
                                         _ => return,
                                     }
                                 }
-
-                                pool2.borrow_mut().push(response_buf);
                             });
                         }
                     });
@@ -516,25 +467,22 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                         iter::repeat_with(|| Vec::with_capacity(BUF_SIZE)).take(POOL_SIZE),
                     );
 
-                    let response_pool = std::rc::Rc::new(std::cell::RefCell::new(
-                        (0..1000)
-                            .map(|_| String::with_capacity(POOL_SIZE))
-                            .collect::<Vec<_>>(),
-                    ));
                     let service = service.clone();
                     tokio_uring::start(async move {
                         registry.register().expect("register failed");
 
                         let socket = create_reuse_port_listener(&addr).unwrap();
                         let listener = socket.listen(get_somaxconn().unwrap()).unwrap();
-                        let listener = tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
+                        let listener =
+                            tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
 
                         loop {
                             let (stream, _) = listener.accept().await.unwrap();
                             let registry = registry.clone();
-                            let pool2 = response_pool.clone();
-                            let service = service.clone();
+                            let mut service = service.clone();
                             tokio_uring::spawn(async move {
+                                let mut rsp_buf = BytesMut::with_capacity(BUF_LEN);
+                                let mut body_buf = BytesMut::with_capacity(4096);
                                 let mut index = 0;
                                 let mut buf = None;
                                 while index < POOL_SIZE {
@@ -549,11 +497,6 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                     Some(b) => b,
                                     None => return,
                                 };
-
-                                let mut response_buf = pool2
-                                    .borrow_mut()
-                                    .pop()
-                                    .unwrap_or_else(|| String::with_capacity(1024));
 
                                 let mut read_pos = 0;
                                 let mut write_pos = 0;
@@ -588,35 +531,22 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                     }
                                                 }
                                             }
+                                            reserve_buf(&mut rsp_buf);
+                                            let mut rsp = Response::new(&mut body_buf);
 
-                                            let response = service.router(req).await;
-                                            let connection_header = if should_close {
-                                                "Connection: close".to_string()
-                                            } else {
-                                                "Connection: keep-alive".to_string()
-                                            };
-                                            response_buf.clear();
-
-                                            let _ = write!(
-                                                response_buf,
-                                                "HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: {}\r\n",
-                                                response.status_code,
-                                                response.body.len(),
-                                                response.content_type,
-                                            );
-
-                                            for (k, v) in response.headers {
-                                                let _ = write!(response_buf, "{}: {}\r\n", k, v);
+                                            match service.router(req, &mut rsp).await {
+                                                Ok(()) => response::encode(rsp, &mut rsp_buf),
+                                                Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let _ = write!(
-                                                response_buf,
-                                                "{}\r\n\r\n{}",
-                                                connection_header, response.body
-                                            );
-                                            let (res, _) = stream
-                                                .write_all(response_buf.as_bytes().to_vec())
-                                                .await;
+                                            let write_buf = rsp_buf.to_vec();
+                                            //let cek = String::from_utf8(write_buf.clone()).unwrap();
+                                            //println!("res: {}", cek);
+                                            //rsp_buf.clear();
+                                            //println!("len: {}", rsp_buf.len());
+                                            //let write_buf = unsafe { bytes_mut_to_vec(rsp_buf) };
+                                            let (res, _) = stream.write_all(write_buf).await;
+                                            //let (res, _) = stream.write_all(&rsp_buf[..]).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
@@ -624,8 +554,6 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                         _ => return,
                                     }
                                 }
-
-                                pool2.borrow_mut().push(response_buf);
                             });
                         }
                     });
@@ -654,11 +582,6 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                     let pool = FixedBufPool::new(
                         iter::repeat_with(|| Vec::with_capacity(BUF_SIZE)).take(POOL_SIZE),
                     );
-                    let response_pool = std::rc::Rc::new(std::cell::RefCell::new(
-                        (0..1000)
-                            .map(|_| String::with_capacity(POOL_SIZE))
-                            .collect::<Vec<_>>(),
-                    ));
 
                     let service = service.clone();
 
@@ -667,24 +590,22 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
 
                         let socket = create_reuse_port_listener(&addr).unwrap();
                         let listener = socket.listen(get_somaxconn().unwrap()).unwrap();
-                        let listener = tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
+                        let listener =
+                            tokio_uring::net::TcpListener::from_std(listener.into_std().unwrap());
 
                         loop {
                             let (stream, _) = listener.accept().await.unwrap();
                             let pool = pool.clone();
-                            let pool2 = response_pool.clone();
-                            let service = service.clone();
+                            let mut service = service.clone();
 
                             tokio_uring::spawn(async move {
+                                // Create buffers for this specific connection
+                                let mut rsp_buf = BytesMut::with_capacity(BUF_LEN);
+                                let mut body_buf = BytesMut::with_capacity(4096);
                                 let mut buf = match pool.try_next(BUF_SIZE) {
                                     Some(b) => b,
                                     None => return,
                                 };
-
-                                let mut response_buf = pool2
-                                    .borrow_mut()
-                                    .pop()
-                                    .unwrap_or_else(|| String::with_capacity(POOL_SIZE));
                                 let mut read_pos = 0;
                                 let mut write_pos = 0;
 
@@ -719,43 +640,28 @@ impl<T: HttpService + Clone + Send + Sync + 'static> HttpServer<T> {
                                                 }
                                             }
 
-                                            let response = service.router(req).await;
-                                            let connection_header = if should_close {
-                                                "Connection: close".to_string()
-                                            } else {
-                                                "Connection: keep-alive".to_string()
-                                            };
+                                            reserve_buf(&mut rsp_buf);
+                                            let mut rsp = Response::new(&mut body_buf);
 
-                                            response_buf.clear();
-                                            let _ = write!(
-                                                response_buf,
-                                                "HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: {}\r\n",
-                                                response.status_code,
-                                                response.body.len(),
-                                                response.content_type,
-                                            );
-
-                                            for (k, v) in response.headers {
-                                                let _ = write!(response_buf, "{}: {}\r\n", k, v);
+                                            match service.router(req, &mut rsp).await {
+                                                Ok(()) => response::encode(rsp, &mut rsp_buf),
+                                                Err(e) => response::encode_error(e, &mut rsp_buf),
                                             }
 
-                                            let _ = write!(
-                                                response_buf,
-                                                "{}\r\n\r\n{}",
-                                                connection_header, response.body
-                                            );
-                                            let (res, _) = stream
-                                                .write_all(response_buf.as_bytes().to_vec())
-                                                .await;
+                                            let write_buf = rsp_buf.to_vec();
+                                            //let cek = String::from_utf8(write_buf.clone()).unwrap();
+                                            //println!("res: {}", cek);
+                                            //rsp_buf.clear();
+                                            //println!("len: {}", rsp_buf.len());
+                                            let (res, _) = stream.write_all(write_buf).await;
                                             if res.is_err() || should_close {
                                                 return;
                                             }
+                                            //rsp_buf.clear();
                                         }
                                         _ => return,
                                     }
                                 }
-
-                                pool2.borrow_mut().push(response_buf);
                             });
                         }
                     });

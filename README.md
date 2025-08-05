@@ -112,24 +112,19 @@ fio = { git = "https://github.com/fuji-184/FIo.git", features = ["io_uring_regis
 Then:
 
 ```rust
-use fio::{HttpServer, HttpService, Request, io_uring::Res};
+use fio::{HttpServer, HttpService, Request, Response};
 
 #[derive(Clone)]
 struct Server;
 
 impl HttpService for Server {
-    async fn router(&self, req: Request<'_,'_>) -> Res {
+    async fn router(&mut self, req: Request<'_, '_>, res: &mut Response<'_>) -> io::Result<()> {
         match req.path.unwrap() {
-            "/" => {
-                Res {
-                    status_code: 200,
-                    content_type: "text/plain",
-                    headers: &[],
-                    body: "hello"
-                }
-            }
-            _   => res::not_found()
+            "/" => res.body("hello"),
+            _   => res.body("not found")
         }
+
+        Ok(())
     }
 }
 
@@ -150,26 +145,21 @@ fio = { git = "https://github.com/fuji-184/FIo.git", features = ["io_uring_pool"
 Then:
 
 ```rust
-use fio::{HttpServer, HttpService, Request, io_uring::Res};
+use fio::{HttpServer, HttpService, Request, Response};
 use std::io;
 
 #[derive(Clone)]
 struct Server;
 
 impl HttpService for Server {
-    async fn router(&self, req: Request<'_,'_>) -> Res {
+    async fn router(&mut self, req: Request<'_, '_>, res: &mut Response<'_>) -> io::Result<()> {
         match req.path.unwrap() {
-            "/" => {
-                Res {
-                    status_code: 200,
-                    content_type: "text/plain",
-                    headers: &[],
-                    body: "hello"
-                }
-            }
-            _   => res::not_found()
+            "/" => res.body("hello")
+            _   => res::body("not found")
         }
     }
+
+    Ok(())
 }
 
 fn main() {
